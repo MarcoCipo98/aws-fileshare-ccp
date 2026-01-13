@@ -44,38 +44,40 @@
   </div>
 
   <script>
-    const envOut = document.getElementById("envOut");
-    const statusEl = document.getElementById("status");
-    const shareOut = document.getElementById("shareOut");
-    const fileInput = document.getElementById("fileInput");
-    const fileIdInput = document.getElementById("fileId");
+  const envOut = document.getElementById("envOut");
+  const statusEl = document.getElementById("status");
+  const shareOut = document.getElementById("shareOut");
+  const fileInput = document.getElementById("fileInput");
+  const fileIdInput = document.getElementById("fileId");
 
-    async function showEnv() {
-      const env = await fetch("/env").then(r => r.json());
-      const ver = await fetch("/version").then(r => r.json());
-      envOut.textContent = `env=${env.env} version=${ver.version}`;
+  async function showEnv() {
+    const env = await fetch("/env").then(r => r.json());
+    const ver = await fetch("/version").then(r => r.json());
+    envOut.textContent = `env=${env.env} version=${ver.version}`;
+  }
+
+  document.getElementById("btnHealth").addEventListener("click", async () => {
+    statusEl.textContent = "Checking /health...";
+    const res = await fetch("/health");
+    statusEl.textContent = `Health: HTTP ${res.status} ${await res.text()}`;
+  });
+
+  document.getElementById("btnEnv").addEventListener("click", showEnv);
+  showEnv().catch(() => {});
+
+  document.getElementById("btnUpload").addEventListener("click", async () => {
+    shareOut.textContent = "";
+    statusEl.textContent = "";
+
+    const file = fileInput.files[0];
+    if (!file) {
+      statusEl.textContent = "Pick a file first.";
+      return;
     }
 
-    document.getElementById("btnHealth").addEventListener("click", async () => {
-      statusEl.textContent = "Checking /health...";
-      const res = await fetch("/health");
-      statusEl.textContent = `Health: HTTP ${res.status} ${await res.text()}`;
-    });
-
-    document.getElementById("btnEnv").addEventListener("click", showEnv);
-    showEnv().catch(() => {});
-
-    document.getElementById("btnUpload").addEventListener("click", async () => {
-      shareOut.textContent = "";
-      const file = fileInput.files[0];
-      if (!file) {
-        statusEl.textContent = "Pick a file first.";
-        return;
-      }
-
-      statusEl.textContent = "Requesting presigned upload URL...";
-
+    try {
       // 1) Ask backend for presigned PUT URL
+      statusEl.textContent = "Requesting presigned upload URL...";
       const presignResp = await fetch("/files/presign-upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -89,24 +91,31 @@
         const t = await presignResp.text();
         statusEl.textContent = `Presign failed: HTTP ${presignResp.status} - ${t}`;
         return;
-}
+      }
+
       const { fileId, uploadUrl } = await presignResp.json();
       fileIdInput.value = fileId;
 
-      // 2) Upload file directly to S3 using the presigned URL
+      // 2) Upload file directly to S3
       statusEl.textContent = "Uploading file to S3...";
-      const s3Put = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file
-      });
+      let s3Put;
+      try {
+        s3Put = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file
+        });
+      } catch (e) {
+        statusEl.textContent = `S3 upload error: ${e.message}`;
+        return;
+      }
 
       if (!s3Put.ok) {
         statusEl.textContent = `S3 upload failed: HTTP ${s3Put.status}`;
         return;
       }
 
-      // 3) Tell backend upload is complete (so it verifies S3 object and marks READY)
+      // 3) Tell backend upload is complete
       statusEl.textContent = "Finalizing upload...";
       const completeResp = await fetch("/files/complete", {
         method: "POST",
@@ -120,30 +129,39 @@
         return;
       }
 
-      statusEl.textContent = "Upload complete. File is READY. Now generate a share link.";
-    });
+      statusEl.textContent = "Upload complete. File is READY.";
 
-    document.getElementById("btnShare").addEventListener("click", async () => {
-      shareOut.textContent = "";
-      const fileId = fileIdInput.value.trim();
-      if (!fileId) {
-        statusEl.textContent = "fileId is empty. Upload first.";
-        return;
-      }
+      // ✅ Reset file input so no file stays selected
+      fileInput.value = "";
 
-      statusEl.textContent = "Generating share link...";
-      const resp = await fetch(`/files/${encodeURIComponent(fileId)}/share`, { method: "POST" });
+    } catch (e) {
+      statusEl.textContent = `Unexpected error: ${e.message}`;
+    }
+  });
 
-      if (!resp.ok) {
-        const t = await resp.text();
-        statusEl.textContent = `Share failed: ${resp.status} ${t}`;
-        return;
-      }
+  document.getElementById("btnShare").addEventListener("click", async () => {
+    shareOut.textContent = "";
 
-      const data = await resp.json();
-      statusEl.textContent = "Share link generated (expires soon).";
-      shareOut.innerHTML = `Download: <a href="${data.downloadUrl}" target="_blank" rel="noreferrer">${data.downloadUrl}</a>`;
-    });
-  </script>
+    const fileId = fileIdInput.value.trim();
+    if (!fileId) {
+      statusEl.textContent = "fileId is empty. Upload first.";
+      return;
+    }
+
+    statusEl.textContent = "Generating share link...";
+    const resp = await fetch(`/files/${encodeURIComponent(fileId)}/share`, { method: "POST" });
+
+    if (!resp.ok) {
+      const t = await resp.text();
+      statusEl.textContent = `Share failed: ${resp.status} ${t}`;
+      return;
+    }
+
+    const data = await resp.json();
+    statusEl.textContent = "Share link generated (expires soon).";
+    shareOut.innerHTML = `Download: <a href="${data.downloadUrl}" target="_blank" rel="noreferrer">${data.downloadUrl}</a>`;
+  });
+</script>
+
 </body>
 </html>
