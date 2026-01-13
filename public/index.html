@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Secure File Share (CCP)</title>
+  <style>
+    body { font-family: system-ui, Arial; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin: 16px 0; }
+    button { padding: 10px 12px; cursor: pointer; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Secure File Share (AWS CCP Intro Project)</h1>
+  <p class="muted">Step 0: Local UI + Local API. AWS features come in Step 1.</p>
+
+  <div class="card">
+    <h2>API Smoke Test</h2>
+    <div class="row">
+      <button id="btnHealth">GET /health</button>
+      <button id="btnEnv">GET /env + /version</button>
+    </div>
+    <p id="out" class="mono muted"></p>
+  </div>
+
+  <script>
+    const out = document.getElementById("out");
+
+    document.getElementById("btnHealth").addEventListener("click", async () => {
+      out.textContent = "Loading...";
+      const res = await fetch("/health");
+      out.textContent = `HTTP ${res.status}: ${await res.text()}`;
+    });
+
+    document.getElementById("btnEnv").addEventListener("click", async () => {
+      out.textContent = "Loading...";
+      const env = await fetch("/env").then(r => r.json());
+      const ver = await fetch("/version").then(r => r.json());
+      out.textContent = `env=${env.env} version=${ver.version}`;
+    });
+  </script>
+</body>
+</html>
