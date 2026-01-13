@@ -1,7 +1,7 @@
 const path = require("path");
 const express = require("express");
 const morgan = require("morgan");
-const { v4: uuidv4 } = require("uuid");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
@@ -41,7 +41,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 // ----- Basic Endpoints -----
-app.get("/health", (req, res) => res.status(200).send("OK") || res.status(404).send("Not Found"));
+app.get("/health", (req, res) => res.status(200).send("OK") || res.status(404).send("Not"));
 app.get("/version", (req, res) => res.json({ version: APP_VERSION }));
 app.get("/env", (req, res) => res.json({ env: APP_ENV }));
 
@@ -63,7 +63,7 @@ app.post("/files/presign-upload", async (req, res, next) => {
     const originalFilename = requireString(req.body.originalFilename, "originalFilename");
     const contentType = requireString(req.body.contentType, "contentType");
 
-    const fileId = uuidv4();
+    const fileId = crypto.randomUUID();
     const safeName = originalFilename.replace(/[^\w.\-]+/g, "_");
     const s3Key = `uploads/${fileId}/${safeName}`;
 
