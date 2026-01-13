@@ -1,0 +1,36 @@
+name: deploy-dev
+
+on:
+  push:
+    branches: [ "develop" ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dev-smoke:
+    name: dev-smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-DevDeployRole
+          aws-region: eu-central-1
+
+      - name: Run DEV smoke test via SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --targets "Key=tag:Environment,Values=dev" \
+            --parameters commands="curl -f http://localhost:8080/health" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --targets "Key=tag:Environment,Values=dev"
