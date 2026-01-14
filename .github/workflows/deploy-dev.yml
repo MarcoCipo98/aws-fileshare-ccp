@@ -71,13 +71,38 @@ jobs:
 
       - name: Post-check DEV health via SSM (/health)
         run: |
+          # 1) Nur RUNNING Instances mit Environment=dev
           INSTANCE_IDS=$(aws ec2 describe-instances \
-            --filters "Name=tag:Environment,Values=dev" \
+            --filters "Name=tag:Environment,Values=dev" "Name=instance-state-name,Values=running" \
             --query "Reservations[].Instances[].InstanceId" \
             --output text)
 
-          echo "DEV instances after deploy: $INSTANCE_IDS"
+          echo "RUNNING DEV instances after deploy: $INSTANCE_IDS"
 
+          # 2) Warten, bis diese Instances in SSM "Online" sind
+          # (SSM Agent braucht oft noch 30-120s nach Boot)
+          for i in {1..20}; do
+            ONLINE_IDS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_IDS" \
+              --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
+              --output text)
+
+            echo "SSM online: $ONLINE_IDS"
+
+            if [ -n "$ONLINE_IDS" ]; then
+              INSTANCE_IDS="$ONLINE_IDS"
+              break
+            fi
+
+            sleep 15
+          done
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No SSM-online instances found after deploy"
+            exit 1
+          fi
+
+          # 3) Smoke-Test nur auf SSM-online Instances
           POST_COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunShellScript" \
             --instance-ids $INSTANCE_IDS \
