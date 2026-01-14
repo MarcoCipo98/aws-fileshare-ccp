@@ -1,56 +1,140 @@
-name: deploy-prod
+name: deploy-dev
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "develop" ]
+
+concurrency:
+  group: deploy-dev-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  prod-smoke:
-    name: prod-smoke
+  dev-smoke:
+    name: dev-smoke
     runs-on: ubuntu-latest
 
     steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-ProdDeployRole
+          role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-DevDeployRole
           aws-region: eu-central-1
 
-      - name: Pre-check PROD health (/health)
+      - name: Pre-check DEV health via SSM (/health)
         run: |
-          curl -fsS "${{ vars.PROD_HEALTH_URL }}"
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Environment,Values=dev" "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
 
-      - name: Deploy PROD (ASG Instance Refresh)
+          echo "RUNNING DEV instances: $INSTANCE_IDS"
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No RUNNING dev instances found"
+            exit 1
+          fi
+
+          for i in {1..20}; do
+            ONLINE_IDS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_IDS" \
+              --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
+              --output text)
+            echo "SSM online: $ONLINE_IDS"
+            if [ -n "$ONLINE_IDS" ]; then
+              INSTANCE_IDS="$ONLINE_IDS"
+              break
+            fi
+            sleep 15
+          done
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No SSM-online instances found for pre-check"
+            exit 1
+          fi
+
+          PRE_COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids $INSTANCE_IDS \
+            --parameters commands="curl -f http://localhost:8080/health" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Pre-check Command ID: $PRE_COMMAND_ID"
+
+          for ID in $INSTANCE_IDS; do
+            aws ssm wait command-executed --command-id "$PRE_COMMAND_ID" --instance-id "$ID"
+          done
+
+      - name: Deploy DEV (ASG Instance Refresh)
         run: |
           aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name "${{ vars.PROD_ASG_NAME }}" \
+            --auto-scaling-group-name "${{ vars.DEV_ASG_NAME }}" \
             --preferences MinHealthyPercentage=90,InstanceWarmup=60
 
-      - name: Wait for PROD deploy to finish
+      - name: Wait for DEV deploy to finish
         run: |
           REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
-            --auto-scaling-group-name "${{ vars.PROD_ASG_NAME }}" \
+            --auto-scaling-group-name "${{ vars.DEV_ASG_NAME }}" \
             --query "InstanceRefreshes[0].InstanceRefreshId" --output text)
 
           echo "Refresh ID: $REFRESH_ID"
 
           while true; do
             STATUS=$(aws autoscaling describe-instance-refreshes \
-              --auto-scaling-group-name "${{ vars.PROD_ASG_NAME }}" \
+              --auto-scaling-group-name "${{ vars.DEV_ASG_NAME }}" \
               --instance-refresh-ids "$REFRESH_ID" \
               --query "InstanceRefreshes[0].Status" --output text)
 
-            echo "PROD refresh status: $STATUS"
+            echo "DEV refresh status: $STATUS"
 
             if [ "$STATUS" = "Successful" ]; then exit 0; fi
             if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then exit 1; fi
             sleep 20
           done
 
-      - name: Post-check PROD health (/health)
+      - name: Post-check DEV health via SSM (/health)
         run: |
-          curl -fsS "${{ vars.PROD_HEALTH_URL }}"
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Environment,Values=dev" "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          echo "RUNNING DEV instances after deploy: $INSTANCE_IDS"
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No RUNNING dev instances found after deploy"
+            exit 1
+          fi
+
+          for i in {1..20}; do
+            ONLINE_IDS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_IDS" \
+              --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
+              --output text)
+            echo "SSM online: $ONLINE_IDS"
+            if [ -n "$ONLINE_IDS" ]; then
+              INSTANCE_IDS="$ONLINE_IDS"
+              break
+            fi
+            sleep 15
+          done
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No SSM-online instances found for post-check"
+            exit 1
+          fi
+
+          POST_COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids $INSTANCE_IDS \
+            --parameters commands="curl -f http://localhost:8080/health" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Post-check Command ID: $POST_COMMAND_ID"
+
+          for ID in $INSTANCE_IDS; do
+            aws ssm wait command-executed --command-id "$POST_COMMAND_ID" --instance-id "$ID"
+          done
