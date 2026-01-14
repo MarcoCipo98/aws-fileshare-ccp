@@ -1,45 +1,56 @@
-name: deploy-dev
+name: deploy-prod
 
 on:
   push:
-    branches: [ "develop" ]
+    branches: [ "main" ]
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  dev-smoke:
-    name: dev-smoke
+  prod-smoke:
+    name: prod-smoke
     runs-on: ubuntu-latest
 
     steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-DevDeployRole
+          role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-ProdDeployRole
           aws-region: eu-central-1
 
-      - name: Run DEV smoke test via SSM
+      - name: Pre-check PROD health (/health)
         run: |
-          INSTANCE_IDS=$(aws ec2 describe-instances \
-            --filters "Name=tag:Environment,Values=dev" \
-            --query "Reservations[].Instances[].InstanceId" \
-            --output text)
+          curl -fsS "${{ vars.PROD_HEALTH_URL }}"
 
-          echo "DEV instances: $INSTANCE_IDS"
+      - name: Deploy PROD (ASG Instance Refresh)
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "${{ vars.PROD_ASG_NAME }}" \
+            --preferences MinHealthyPercentage=90,InstanceWarmup=60
 
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name "AWS-RunShellScript" \
-            --instance-ids $INSTANCE_IDS \
-            --parameters commands="curl -f http://localhost:8080/health" \
-            --query "Command.CommandId" \
-            --output text)
+      - name: Wait for PROD deploy to finish
+        run: |
+          REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
+            --auto-scaling-group-name "${{ vars.PROD_ASG_NAME }}" \
+            --query "InstanceRefreshes[0].InstanceRefreshId" --output text)
 
-          echo "Command ID: $COMMAND_ID"
+          echo "Refresh ID: $REFRESH_ID"
 
-          for ID in $INSTANCE_IDS; do
-            aws ssm wait command-executed \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$ID"
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "${{ vars.PROD_ASG_NAME }}" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --query "InstanceRefreshes[0].Status" --output text)
+
+            echo "PROD refresh status: $STATUS"
+
+            if [ "$STATUS" = "Successful" ]; then exit 0; fi
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then exit 1; fi
+            sleep 20
           done
+
+      - name: Post-check PROD health (/health)
+        run: |
+          curl -fsS "${{ vars.PROD_HEALTH_URL }}"
