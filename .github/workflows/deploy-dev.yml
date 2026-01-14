@@ -20,7 +20,7 @@ jobs:
           role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-DevDeployRole
           aws-region: eu-central-1
 
-      - name: name: Pre-check DEV health via SSM (/health)
+      - name: Pre-check DEV health via SSM (/health)
         run: |
           # 1) Nur RUNNING Instances mit Environment=dev
           INSTANCE_IDS=$(aws ec2 describe-instances \
