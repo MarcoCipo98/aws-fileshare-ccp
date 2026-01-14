@@ -22,7 +22,7 @@ jobs:
 
       - name: Pre-check PROD health (/health)
         run: |
-          curl -fsS http://fileshare-prod-alb-1907192570.eu-central-1.elb.amazonaws.com/health
+          curl -fsS "${{ vars.PROD_HEALTH_URL }}"
 
       - name: Deploy PROD (ASG Instance Refresh)
         run: |
@@ -53,4 +53,4 @@ jobs:
 
       - name: Post-check PROD health (/health)
         run: |
-          curl -fsS http://fileshare-prod-alb-1907192570.eu-central-1.elb.amazonaws.com/health
+          curl -fsS "${{ vars.PROD_HEALTH_URL }}"
