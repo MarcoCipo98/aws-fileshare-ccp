@@ -20,7 +20,7 @@ jobs:
           role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-DevDeployRole
           aws-region: eu-central-1
 
-      - name: Run DEV smoke test via SSM
+      - name: Pre-check DEV health via SSM (/health)
         run: |
           INSTANCE_IDS=$(aws ec2 describe-instances \
             --filters "Name=tag:Environment,Values=dev" \
@@ -29,17 +29,64 @@ jobs:
 
           echo "DEV instances: $INSTANCE_IDS"
 
-          COMMAND_ID=$(aws ssm send-command \
+          PRE_COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunShellScript" \
             --instance-ids $INSTANCE_IDS \
             --parameters commands="curl -f http://localhost:8080/health" \
             --query "Command.CommandId" \
             --output text)
 
-          echo "Command ID: $COMMAND_ID"
+          echo "Pre-check Command ID: $PRE_COMMAND_ID"
 
           for ID in $INSTANCE_IDS; do
-            aws ssm wait command-executed \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$ID"
+            aws ssm wait command-executed --command-id "$PRE_COMMAND_ID" --instance-id "$ID"
+          done
+
+      - name: Deploy DEV (ASG Instance Refresh)
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "${{ vars.DEV_ASG_NAME }}" \
+            --preferences MinHealthyPercentage=90,InstanceWarmup=60
+
+      - name: Wait for DEV deploy to finish
+        run: |
+          REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
+            --auto-scaling-group-name "${{ vars.DEV_ASG_NAME }}" \
+            --query "InstanceRefreshes[0].InstanceRefreshId" --output text)
+
+          echo "Refresh ID: $REFRESH_ID"
+
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "${{ vars.DEV_ASG_NAME }}" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --query "InstanceRefreshes[0].Status" --output text)
+
+            echo "DEV refresh status: $STATUS"
+
+            if [ "$STATUS" = "Successful" ]; then exit 0; fi
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then exit 1; fi
+            sleep 20
+          done
+
+      - name: Post-check DEV health via SSM (/health)
+        run: |
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Environment,Values=dev" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          echo "DEV instances after deploy: $INSTANCE_IDS"
+
+          POST_COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids $INSTANCE_IDS \
+            --parameters commands="curl -f http://localhost:8080/health" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Post-check Command ID: $POST_COMMAND_ID"
+
+          for ID in $INSTANCE_IDS; do
+            aws ssm wait command-executed --command-id "$POST_COMMAND_ID" --instance-id "$ID"
           done
