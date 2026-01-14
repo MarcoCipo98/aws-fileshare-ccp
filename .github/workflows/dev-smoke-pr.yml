@@ -1,0 +1,67 @@
+name: dev-smoke-pr
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dev-smoke-pr:
+    name: dev-smoke-pr
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::444198540044:role/GitHubActions-DevSmokePRRole
+          aws-region: eu-central-1
+
+      - name: DEV smoke test via SSM (/health)
+        run: |
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Environment,Values=dev" "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          echo "RUNNING DEV instances: $INSTANCE_IDS"
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No RUNNING dev instances found"
+            exit 1
+          fi
+
+          # Wait until at least one is SSM Online
+          for i in {1..20}; do
+            ONLINE_IDS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_IDS" \
+              --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" \
+              --output text)
+
+            echo "SSM online: $ONLINE_IDS"
+            if [ -n "$ONLINE_IDS" ]; then
+              INSTANCE_IDS="$ONLINE_IDS"
+              break
+            fi
+            sleep 15
+          done
+
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "No SSM-online instances found"
+            exit 1
+          fi
+
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids $INSTANCE_IDS \
+            --parameters commands="curl -f http://localhost:8080/health" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          for ID in $INSTANCE_IDS; do
+            aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$ID"
+          done
